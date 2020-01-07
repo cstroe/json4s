@@ -330,14 +330,20 @@ object Extraction {
         else JString(ParserUtil.unquote(value.substring(1)))
     }
 
-    def submap(prefix: String): Map[String, String] =
-      map.withFilter(t => t._1.startsWith(prefix)).map(
-        t => (t._1.substring(prefix.length), t._2)
-      )
-
     val ArrayProp = new Regex("""^(\.([^\.\[]+))\[(\d+)\].*$""")
     val ArrayElem = new Regex("""^(\[(\d+)\]).*$""")
     val OtherProp = new Regex("""^(\.([^\.\[]+)).*$""")
+
+    def submap(prefix: String): Map[String, String] = {
+      map.withFilter { t =>
+        t._1 match {
+          case ArrayProp(p, _, _) if p == prefix => true
+          case ArrayElem(p, _)    if p == prefix => true
+          case OtherProp(p, _)    if p == prefix => true
+          case _                  => false
+        }
+      } map { t => (t._1.substring(prefix.length), t._2) }
+    }
 
     val uniquePaths = map.keys.foldLeft[Set[String]](Set()) {
       (set, key) =>
@@ -450,7 +456,9 @@ object Extraction {
 
     def result: Any = {
       val custom = Formats.customDeserializer(tpe.typeInfo, json)(formats)
+      lazy val customRich = Formats.customRichDeserializer(tpe, json)(formats)
       if (custom.isDefinedAt(tpe.typeInfo, json)) custom(tpe.typeInfo, json)
+      else if (customRich.isDefinedAt(tpe, json)) customRich(tpe, json)
       else if (tpe.erasure == classOf[List[_]]) mkCollection(_.toList)
       else if (tpe.erasure == classOf[Set[_]]) mkCollection(_.toSet)
       else if (tpe.erasure == classOf[scala.collection.mutable.Set[_]]) mkCollection(a => scala.collection.mutable.Set(a: _*))
@@ -466,7 +474,7 @@ object Extraction {
               None
           }
           c.flatMap { _ =>
-            reflect.ScalaSigReader.companions(tpe.erasure.getName).flatMap(_._2) 
+            reflect.ScalaSigReader.companions(tpe.erasure.getName).flatMap(_._2)
           }
         }
 
@@ -678,7 +686,12 @@ object Extraction {
   private[this] def customOrElse(target: ScalaType, json: JValue)(thunk: JValue => Any)(implicit formats: Formats): Any = {
     val targetType = target.typeInfo
     val custom = Formats.customDeserializer(targetType, json)(formats)
-    custom.applyOrElse((targetType, json), (t: (TypeInfo, JValue)) => thunk(t._2))
+    val customRich = Formats.customRichDeserializer(target, json)(formats)
+    if (customRich.isDefinedAt(target, json)) {
+      customRich(target, json)
+    } else {
+      custom.applyOrElse((targetType, json), (t: (TypeInfo, JValue)) => thunk(t._2))
+    }
   }
 
   private[this] def convert(key: String, target: ScalaType, formats: Formats): Any = {
